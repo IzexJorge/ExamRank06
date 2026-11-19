@@ -1,8 +1,8 @@
 
+#include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <string.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/select.h>
@@ -14,8 +14,8 @@ int		ids[FD_SETSIZE];
 char	*inbuf[FD_SETSIZE];
 char	*outbuf[FD_SETSIZE];
 
-char	broadcast_buf[64];
 char	recv_buf[4096];
+char	broadcast_buf[64];
 
 int extract_message(char **buf, char **msg)
 {
@@ -72,8 +72,6 @@ void fatal_error()
 
 void clean_client(int fd)
 {
-	FD_CLR(fd, &all);
-	FD_CLR(fd, &pending_out);
 	free(inbuf[fd]);
 	free(outbuf[fd]);
 	close(fd);
@@ -83,16 +81,17 @@ void clean_all()
 {
 	for (int fd = 0; fd <= maxfd; fd++)
 	{
-		if (FD_ISSET(fd, &all))
+		if (FD_ISSET(fd, &all) && fd != sockfd)
 			clean_client(fd);
 	}
+	close(sockfd);
 }
 
-void broadcast(int protagonist_fd, char *msg)
+void broadcast(int protagonist, char *msg)
 {
 	for (int fd = 0; fd <= maxfd; fd++)
 	{
-		if (FD_ISSET(fd, &all) && fd != sockfd && fd != protagonist_fd)
+		if (FD_ISSET(fd, &all) && fd != sockfd && fd != protagonist)
 		{
 			outbuf[fd] = str_join(outbuf[fd], msg);
 			if (outbuf[fd] == 0)
@@ -100,6 +99,7 @@ void broadcast(int protagonist_fd, char *msg)
 				clean_all();
 				fatal_error();
 			}
+
 			FD_SET(fd, &pending_out);
 		}
 	}
@@ -107,12 +107,14 @@ void broadcast(int protagonist_fd, char *msg)
 
 void remove_client(int fd)
 {
+	FD_CLR(fd, &all);
+	FD_CLR(fd, &pending_out);
+	clean_client(fd);
 	sprintf(broadcast_buf, "server: client %d just left\n", ids[fd]);
 	broadcast(fd, broadcast_buf);
-	clean_client(fd);
 }
 
-void send_message(int fd)
+void send_out(int fd)
 {
 	ssize_t	bytes;
 	char	*rest;
@@ -120,27 +122,30 @@ void send_message(int fd)
 	bytes = send(fd, outbuf[fd], strlen(outbuf[fd]), MSG_DONTWAIT | MSG_NOSIGNAL);
 	if (bytes <= 0)
 		return;
+
 	rest = str_join(0, outbuf[fd] + bytes);
 	if (rest == 0)
 	{
 		clean_all();
 		fatal_error();
 	}
+
 	free(outbuf[fd]);
 	outbuf[fd] = rest;
+
 	if (rest[0] == 0)
 		FD_CLR(fd, &pending_out);
 }
 
 void run()
 {
-	fd_set				readfds, writefds;
-	int					connfd;
-	socklen_t			len;
+	fd_set 				readfds, writefds;
+	int 				connfd;
+	socklen_t 			len;
 	struct sockaddr_in	cli;
-	ssize_t				bytes;
+	ssize_t 			bytes;
 	char				*msg;
-	int					msg_status;
+	int 				extract_status;
 
 	while (1)
 	{
@@ -153,7 +158,7 @@ void run()
 		for (int fd = 0; fd <= maxfd; fd++)
 		{
 			if (FD_ISSET(fd, &writefds))
-				send_message(fd);
+				send_out(fd);
 
 			if (!FD_ISSET(fd, &readfds))
 				continue;
@@ -188,9 +193,9 @@ void run()
 				{
 					remove_client(fd);
 					continue;
-				}
-
+				}	
 				recv_buf[bytes] = 0;
+
 				inbuf[fd] = str_join(inbuf[fd], recv_buf);
 				if (inbuf[fd] == 0)
 				{
@@ -198,14 +203,14 @@ void run()
 					fatal_error();
 				}
 
-				while ((msg_status = extract_message(&inbuf[fd], &msg)) == 1)
+				while ((extract_status = extract_message(&inbuf[fd], &msg)) == 1)
 				{
 					sprintf(broadcast_buf, "client %d: ", ids[fd]);
 					broadcast(fd, broadcast_buf);
 					broadcast(fd, msg);
 					free(msg);
 				}
-				if (msg_status < 0)
+				if (extract_status == -1)
 				{
 					clean_all();
 					fatal_error();
@@ -225,7 +230,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	sockfd = socket(AF_INET, SOCK_STREAM, 0);
+	sockfd = socket(AF_INET, SOCK_STREAM, 0); 
 	if (sockfd == -1)
 		fatal_error();
 
@@ -236,6 +241,7 @@ int main(int argc, char *argv[])
 
 	if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0)
 		fatal_error();
+
 	if (listen(sockfd, 4096) != 0)
 		fatal_error();
 
